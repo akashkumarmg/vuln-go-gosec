@@ -97,6 +97,8 @@ jobs:
           # Get changed .go files in the PR (against origin/main)
           readarray -t CHANGED_FILES < <(git diff --name-only origin/main...HEAD | grep '\.go$' || true)
           
+          echo "Changed files: ${CHANGED_FILES[@]}"
+          
           # Filter to only existing .go files (skip deleted/moved files)
           FILTERED_FILES=()
           for file in "${CHANGED_FILES[@]}"; do
@@ -105,16 +107,19 @@ jobs:
             fi
           done
           
+          echo "Filtered files: ${FILTERED_FILES[@]}"
+          
           # Run gosec if any valid files exist
           if [ ${#FILTERED_FILES[@]} -eq 0 ]; then
             echo "No Go files to scan."
-            echo "[]" > gosec-pr-issues.json
+            echo "[]" > gosec-pr.json
           else
+            echo "Scanning files: ${FILTERED_FILES[@]}"
             gosec -fmt=json -out=gosec-pr.json "${FILTERED_FILES[@]}" || true
-            jq '.Issues // []' gosec-pr.json > gosec-pr-issues.json
+            echo "GoSec scan completed."
           fi
           
-          echo "Displaying the PR issues:"
+          jq '.Issues // []' gosec-pr.json > gosec-pr-issues.json
           cat gosec-pr-issues.json
       
       - name: Download GoSec main issues
