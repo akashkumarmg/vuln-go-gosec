@@ -24,11 +24,11 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
+      # Set up Go
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: false
+          go-version: '1.21'
 
       - name: Clean Go Module Cache
         run: sudo rm -rf ~/go/pkg/mod || true
@@ -41,12 +41,14 @@ jobs:
           else
             echo "⚠️ No 'install-dependencies' target found in Makefile. Skipping."
           fi
+     
       - name: Run GoSec on main
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@latest
           gosec -fmt=json -out=gosec-main.json ./... || true
           jq '.Issues // []' gosec-main.json > gosec-main-issues.json
           cat gosec-main-issues.json
+      
       - name: Upload GoSec main results
         uses: actions/upload-artifact@v4
         with:
@@ -59,11 +61,11 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Go (PR)
+      # Set up Go
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: false
+          go-version: '1.21'
 
       - name: Clean Go Module Cache (PR)
         run: sudo rm -rf ~/go/pkg/mod || true
@@ -76,6 +78,7 @@ jobs:
           else
             echo "⚠️ No 'install-dependencies' target found in Makefile. Skipping."
           fi
+      
       - name: Fetch base branch
         run: git fetch origin main
 
@@ -113,6 +116,7 @@ jobs:
           
           echo "Displaying the PR issues:"
           cat gosec-pr-issues.json
+      
       - name: Download GoSec main issues
         uses: actions/download-artifact@v4
         with:
