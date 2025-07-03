@@ -1,0 +1,176 @@
+name: "GoSec Diff-Aware Scan (Make)"
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  gosec-diff-scan:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Clean Go Module Cache
+        run: sudo rm -rf ~/go/pkg/mod || true
+
+      - name: Install dependencies (main, make)
+        run: |
+          if make -qp install-dependencies >/dev/null 2>&1; then
+            echo "✅ Target 'install-dependencies' found. Running it..."
+            make install-dependencies
+          else
+            echo "⚠️ No 'install-dependencies' target found in Makefile. Skipping."
+          fi
+      - name: Run GoSec on main
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -fmt=json -out=gosec-main.json ./... || true
+          jq '.Issues // []' gosec-main.json > gosec-main-issues.json
+          cat gosec-main-issues.json
+      - name: Upload GoSec main results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosec-main-issues
+          path: gosec-main-issues.json
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go (PR)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Clean Go Module Cache (PR)
+        run: sudo rm -rf ~/go/pkg/mod || true
+
+      - name: Install dependencies (PR, make)
+        run: |
+          if make -qp install-dependencies >/dev/null 2>&1; then
+            echo "✅ Target 'install-dependencies' found. Running it..."
+            make install-dependencies
+          else
+            echo "⚠️ No 'install-dependencies' target found in Makefile. Skipping."
+          fi
+      - name: Fetch base branch
+        run: git fetch origin main
+
+      - name: List changed Go files in PR
+        run: |
+          git fetch origin main
+          echo "📂 Changed Go files (from origin/main to HEAD):"
+          git diff --name-only origin/main...HEAD | grep '\.go$' || echo "No Go files changed."
+      
+      - name: Run GoSec on changed PR files
+        run: |
+          # Install gosec
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          export PATH=$PATH:$(go env GOPATH)/bin
+          
+          # Get changed .go files in the PR (against origin/main)
+          readarray -t CHANGED_FILES < <(git diff --name-only origin/main...HEAD | grep '\.go$' || true)
+          
+          # Filter to only existing .go files (skip deleted/moved files)
+          FILTERED_FILES=()
+          for file in "${CHANGED_FILES[@]}"; do
+            if [ -f "$file" ]; then
+              FILTERED_FILES+=("$file")
+            fi
+          done
+          
+          # Run gosec if any valid files exist
+          if [ ${#FILTERED_FILES[@]} -eq 0 ]; then
+            echo "No Go files to scan."
+            echo "[]" > gosec-pr-issues.json
+          else
+            gosec -fmt=json -out=gosec-pr.json "${FILTERED_FILES[@]}" || true
+            jq '.Issues // []' gosec-pr.json > gosec-pr-issues.json
+          fi
+          
+          echo "Displaying the PR issues:"
+          cat gosec-pr-issues.json
+      - name: Download GoSec main issues
+        uses: actions/download-artifact@v4
+        with:
+          name: gosec-main-issues
+          path: .
+
+      - name: Diff and Comment on PR
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          BASE=$(cat gosec-main-issues.json)
+          PR=$(cat gosec-pr-issues.json)
+          NEW_ISSUES=$(jq --argjson base "$BASE" --argjson pr "$PR" '($pr - $base)')
+          echo "$NEW_ISSUES" > gosec-diff-issues.json
+          COUNT=$(echo "$NEW_ISSUES" | jq 'length')
+          COMMENT_FILE="gosec-pr-comment.md"
+          echo "" > "$COMMENT_FILE"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "**GoSec Findings:** ✅ No new high-severity vulnerabilities introduced." > "$COMMENT_FILE"
+          else
+            echo "### 🔐 GoSec Findings — $COUNT new issue(s) introduced in this PR" >> "$COMMENT_FILE"
+            echo -e "\n---\n" >> "$COMMENT_FILE"
+            MAX_DISPLAY=3
+            DISPLAY_COUNT=$((COUNT < MAX_DISPLAY ? COUNT : MAX_DISPLAY))
+            for ((i = 0; i < DISPLAY_COUNT; i++)); do
+              finding=$(echo "$NEW_ISSUES" | jq -c ".[$i]")
+              FILE=$(echo "$finding" | jq -r '.file')
+              LINE=$(echo "$finding" | jq -r '.line')
+              RULE=$(echo "$finding" | jq -r '.rule_id')
+              DETAILS=$(echo "$finding" | jq -r '.details')
+              CWE_ID=$(echo "$finding" | jq -r '.cwe.id')
+              CWE_URL=$(echo "$finding" | jq -r '.cwe.url')
+              CODE=$(echo "$finding" | jq -r '.code')
+              LINK="https://github.com/$REPO/blob/$PR_SHA/$FILE#L$LINE"
+              {
+                echo "#### ❗ Issue $((i+1)) — Rule \`$RULE\`"
+                echo ""
+                echo "📄 \`$FILE:$LINE\` | [🔗 View Code]($LINK)"
+                echo "📘 [CWE-$CWE_ID]($CWE_URL)"
+                echo "💬 _\"$DETAILS\"_"
+                echo ""
+                echo "```go"
+                echo "$CODE"
+                echo "```"
+                echo "---"
+              } >> "$COMMENT_FILE"
+            done
+          fi
+          cat "$COMMENT_FILE"
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "$(jq -n --rawfile body "$COMMENT_FILE" '{body: $body}')" \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments"
+      - name: Upload GoSec PR diff results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosec-pr-diff-findings
+          path: gosec-diff-issues.json
