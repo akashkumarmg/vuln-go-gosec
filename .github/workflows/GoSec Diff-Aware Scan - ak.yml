@@ -1,0 +1,124 @@
+name: GoSec Diff-Aware Scan - ak
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  gosec-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout PR branch with full history so we can diff
+      - name: Checkout PR branch with full history
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+
+      # Fetch main branch for baseline scan and diff
+      - name: Fetch main branch
+        run: git fetch origin main
+
+      # Set up Go
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      # Run GoSec baseline scan on main
+      - name: Checkout main branch for baseline scan
+        run: git checkout origin/main
+
+      - name: Run GoSec on main (baseline)
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -no-fail -fmt=json -out baseline-results.json ./...
+
+      - name: Display GoSec on main (baseline) JSON Output
+        run: |
+          echo "Displaying raw GoSec baseline results..."
+          cat baseline-results.json | jq '.Issues'
+          
+      # Restore PR branch
+      - name: Checkout PR branch again
+        run: git checkout ${{ github.head_ref }}
+
+      # Find changed Go files
+      - name: Get changed Go files
+        id: changes
+        run: |
+          CHANGED=$(git diff --name-only origin/main...HEAD | grep '\.go$' || true)
+          echo "Changed files:"
+          echo "$CHANGED"
+          FILES=$(echo "$CHANGED" | xargs)  # Convert to space-separated string
+          echo "files=$FILES" >> $GITHUB_OUTPUT
+          
+      # Run GoSec on changed files only
+      - name: Run GoSec on changed directories
+        if: steps.changes.outputs.files != ''
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          FILES="${{ steps.changes.outputs.files }}"
+          DIRS=$(echo "$FILES" | xargs -n1 dirname | sort -u | xargs)
+          echo "Scanning directories: $DIRS"
+          gosec -no-fail -fmt=json -out changed-results.json $DIRS
+          
+
+      - name: Display GoSec on PR JSON Output
+        if: steps.changes.outputs.files != ''
+        run: |
+          echo "Displaying raw GoSec results..."
+          cat changed-results.json | jq '.Issues'
+          
+      - name: Format and comment GoSec findings on PR
+        if: steps.changes.outputs.files != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FINDINGS_JSON=$(jq '.Issues' changed-results.json)
+          COUNT=$(echo "$FINDINGS_JSON" | jq 'length')
+          SHA="${{ github.event.pull_request.head.sha }}"
+          REPO="${{ github.repository }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          MAX=5
+      
+          if [ "$COUNT" -gt 0 ]; then
+            COMMENT="🚨 **GoSec Findings: $COUNT issue(s) detected in changed files**\\n\\n"
+            i=0
+            while [ "$i" -lt "$COUNT" ] && [ "$i" -lt "$MAX" ]; do
+              ITEM=$(echo "$FINDINGS_JSON" | jq ".[$i]")
+              RULE=$(echo "$ITEM" | jq -r '.rule_id')
+              DESC=$(echo "$ITEM" | jq -r '.details')
+              FILE=$(echo "$ITEM" | jq -r '.file' | sed 's|/github/workspace/||')
+              LINE=$(echo "$ITEM" | jq -r '.line')
+              SEV=$(echo "$ITEM" | jq -r '.severity')
+              CWE_ID=$(echo "$ITEM" | jq -r '.cwe.id')
+              CWE_URL=$(echo "$ITEM" | jq -r '.cwe.url')
+              LINK="https://github.com/$REPO/blob/$SHA/$FILE#L$LINE"
+      
+              COMMENT+="🔸 **Rule**: \`$RULE\` (**$SEV**)\\n"
+              COMMENT+="📄 **File**: \`$FILE:$LINE\`\\n"
+              COMMENT+="📝 **Description**: $DESC\\n"
+              COMMENT+="🔗 **Link**: [$FILE:$LINE]($LINK)\\n"
+              COMMENT+="📚 **CWE**: [CWE-$CWE_ID]($CWE_URL)\\n\\n"
+              i=$((i + 1))
+            done
+      
+            if [ "$COUNT" -gt "$MAX" ]; then
+              COMMENT+="...and more. Showing only first $MAX findings.\\n"
+            fi
+          else
+            COMMENT="✅ **GoSec Findings**: No vulnerabilities detected in changed files."
+          fi
+      
+          curl -sSL -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"body\":\"$COMMENT\"}" \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments"
