@@ -88,34 +88,26 @@ jobs:
           echo "📂 Changed Go files (from origin/main to HEAD):"
           git diff --name-only origin/main...HEAD | grep '\.go$' || echo "No Go files changed."
       
-      - name: Run GoSec on changed PR files
+      - name: Run GoSec on changed files
         run: |
-          # Install gosec
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          export PATH=$PATH:$(go env GOPATH)/bin
-          
-          # Get changed .go files in the PR (against origin/main)
-          readarray -t CHANGED_FILES < <(git diff --name-only origin/main...HEAD | grep '\.go$' || true)
-          
-          # Filter to only existing .go files (skip deleted/moved files)
+          readarray -t CHANGED_FILES < <(git diff --name-only origin/main...HEAD --diff-filter=ACMRTUXB '*.go' || true)
+      
           FILTERED_FILES=()
           for file in "${CHANGED_FILES[@]}"; do
             if [ -f "$file" ]; then
               FILTERED_FILES+=("$file")
             fi
           done
-          
-          # Run gosec if any valid files exist
+      
           if [ ${#FILTERED_FILES[@]} -eq 0 ]; then
             echo "No Go files to scan."
-            echo "[]" > gosec-pr-issues.json
+            echo "[]" > gosec-pr2.json
           else
-            gosec -fmt=json -out=gosec-pr.json "${FILTERED_FILES[@]}" || true
-            jq '.Issues // []' gosec-pr.json > gosec-pr-issues.json
+            echo "Scanning files: ${FILTERED_FILES[@]}"
+            gosec -fmt=json -out=gosec-pr2.json "${FILTERED_FILES[@]}"
           fi
-          
-          echo "Displaying the PR issues:"
-          cat gosec-pr-issues.json
+          echo "displaying the results"
+          cat gosec-pr2.json
 
       - name: Run GoSec on changed files..
         run: |
