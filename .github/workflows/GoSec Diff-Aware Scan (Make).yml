@@ -116,6 +116,12 @@ jobs:
           
           echo "Displaying the PR issues:"
           cat gosec-pr-issues.json
+
+      - name: Run GoSec on changed files..
+        run: |
+          git diff --name-only origin/main...HEAD --diff-filter=ACMRTUXB '*.go' | xargs -I {} sh -c 'if [ -f {} ]; then gosec -fmt=json -out=gosec-pr2.json {}; fi'
+          echo "displaying the gosec-pr2.json"
+          cat gosec-pr2.json
       
       - name: Download GoSec main issues
         uses: actions/download-artifact@v4
