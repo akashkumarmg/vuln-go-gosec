@@ -1,0 +1,25 @@
+services:
+  vuln-go:
+    build: ./
+    environment:
+      - LISTENER_IP=127.0.0.1
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: mysql:5
+    restart: always
+    environment:
+      - MYSQL_DATABASE=vulngo
+      - MYSQL_USER=user
+      - MYSQL_PASSWORD=password
+      - MYSQL_ALLOW_EMPTY_PASSWORD=true
+    volumes:
+      - ./init.sql:/script/init.sql
+    command: "--init-file /script/init.sql"
+    healthcheck:
+      test: mysqladmin ping -h localhost
+      timeout: 2s
+      retries: 4

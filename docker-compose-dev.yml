@@ -1,0 +1,28 @@
+services:
+  vuln-go:
+    build: 
+      context: ./
+      dockerfile: Dockerfile-dev
+    environment:
+      - LISTENER_IP=0.0.0.0
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./:/app
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: mysql:5
+    environment:
+      - MYSQL_DATABASE=vulngo
+      - MYSQL_USER=user
+      - MYSQL_PASSWORD=password
+      - MYSQL_ALLOW_EMPTY_PASSWORD=true
+    volumes:
+      - ./init.sql:/script/init.sql
+    command: "--init-file /script/init.sql"
+    healthcheck:
+      test: mysqladmin ping -h localhost
+      timeout: 2s
+      retries: 4
