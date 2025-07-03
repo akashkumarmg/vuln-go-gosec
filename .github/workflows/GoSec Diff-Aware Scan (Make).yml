@@ -104,14 +104,14 @@ jobs:
             echo "[]" > gosec-pr2.json
           else
             echo "Scanning files: ${FILTERED_FILES[@]}"
-            gosec -fmt=json -out=gosec-pr2.json "${FILTERED_FILES[@]}"
+            gosec --no-fail -fmt=json -out=gosec-pr2.json "${FILTERED_FILES[@]}"
           fi
           echo "displaying the results"
           cat gosec-pr2.json
 
       - name: Run GoSec on changed files..
         run: |
-          git diff --name-only origin/main...HEAD --diff-filter=ACMRTUXB '*.go' | xargs -I {} sh -c 'if [ -f {} ]; then gosec -fmt=json -out=gosec-pr2.json {}; fi'
+          git diff --name-only origin/main...HEAD --diff-filter=ACMRTUXB '*.go' | xargs -I {} sh -c 'if [ -f {} ]; then gosec --no-fail -fmt=json -out=gosec-pr2.json {}; fi'
           echo "displaying the gosec-pr2.json"
           cat gosec-pr2.json
       
@@ -176,3 +176,4 @@ jobs:
         with:
           name: gosec-pr-diff-findings
           path: gosec-diff-issues.json
+#
