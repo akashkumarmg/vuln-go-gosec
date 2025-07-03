@@ -88,32 +88,29 @@ jobs:
           echo "📂 Changed Go files (from origin/main to HEAD):"
           git diff --name-only origin/main...HEAD | grep '\.go$' || echo "No Go files changed."
       
-      - name: Run GoSec on changed files
+      - name: Run GoSec on changed PR files.
         run: |
+          # Install gosec
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          export PATH=$PATH:$(go env GOPATH)/bin
+          
+          # Get changed .go files in the PR (against origin/main)
           readarray -t CHANGED_FILES < <(git diff --name-only origin/main...HEAD --diff-filter=ACMRTUXB '*.go' || true)
-      
-          FILTERED_FILES=()
-          for file in "${CHANGED_FILES[@]}"; do
-            if [ -f "$file" ]; then
-              FILTERED_FILES+=("$file")
-            fi
-          done
-      
-          if [ ${#FILTERED_FILES[@]} -eq 0 ]; then
+          
+          echo "Changed files: ${CHANGED_FILES[@]}"
+          
+          # Run gosec if any valid files exist
+          if [ ${#CHANGED_FILES[@]} -eq 0 ]; then
             echo "No Go files to scan."
-            echo "[]" > gosec-pr2.json
+            echo "[]" > gosec-pr.json
           else
-            echo "Scanning files: ${FILTERED_FILES[@]}"
-            gosec --no-fail -fmt=json -out=gosec-pr2.json "${FILTERED_FILES[@]}"
+            echo "Scanning files: ${CHANGED_FILES[@]}"
+            gosec --no-fail -fmt=json -out=gosec-pr.json "${CHANGED_FILES[@]}"
+            echo "GoSec scan completed."
           fi
-          echo "displaying the results"
-          cat gosec-pr2.json
-
-      - name: Run GoSec on changed files..
-        run: |
-          git diff --name-only origin/main...HEAD --diff-filter=ACMRTUXB '*.go' | xargs -I {} sh -c 'if [ -f {} ]; then gosec --no-fail -fmt=json -out=gosec-pr2.json {}; fi'
-          echo "displaying the gosec-pr2.json"
-          cat gosec-pr2.json
+          
+          jq '.Issues // []' gosec-pr.json > gosec-pr-issues.json
+          cat gosec-pr-issues.json
       
       - name: Download GoSec main issues
         uses: actions/download-artifact@v4
