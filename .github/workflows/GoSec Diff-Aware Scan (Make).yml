@@ -27,7 +27,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: ./go.mod
           cache: false
 
       - name: Clean Go Module Cache
@@ -62,7 +62,7 @@ jobs:
       - name: Set up Go (PR)
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: ./go.mod
           cache: false
 
       - name: Clean Go Module Cache (PR)
