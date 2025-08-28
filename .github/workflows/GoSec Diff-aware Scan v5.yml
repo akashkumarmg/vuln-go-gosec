@@ -2,8 +2,9 @@ name: "GoSec Diff-aware Scan v5"   # This workflow runs GoSec for both unchanged
 
 # Trigger the workflow on pull requests targeting the main branch
 on:
-  workflow_call:
-
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
