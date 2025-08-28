@@ -1,0 +1,274 @@
+name: "GoSec Diff-aware Scan v5"   # This workflow runs GoSec for both unchanged and changed PRs against the main branch baseline
+
+# Trigger the workflow on pull requests targeting the main branch
+on:
+  workflow_call:
+
+
+permissions:
+  contents: read
+  pull-requests: write  # Required to post comments on the PR
+
+jobs:
+  gosec-pr-diff:
+    runs-on: ubuntu-latest
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # Auth token for Git operations
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # Auth token for commenting via GitHub API
+
+
+    steps:
+      # Step 1: Checkout the latest state of the base (main) branch to establish a baseline scan
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0   # Fetch entire history to enable accurate comparison
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 2: Capture the commit hash of the main branch (for traceability)
+      - name: Save base commit hash
+        id: base_commit
+        run: echo "value=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      # Step 3: Dynamically extract Go version from go.mod file
+      - name: Extract Go version from go.mod
+        id: go_version
+        run: |
+          GO_MOD_PATH=$(find . -name 'go.mod' | head -n 1)
+          if [ -z "$GO_MOD_PATH" ]; then
+            echo "❌ go.mod not found."
+            exit 1
+          fi
+          VERSION=$(grep -oP '^go \K[0-9]+\.[0-9]+(\.[0-9]+)?' "$GO_MOD_PATH")
+          echo "GO_VERSION=$VERSION" >> $GITHUB_ENV
+
+      # Step 4: Set up Go runtime using version extracted from go.mod
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # Step 5: Install any required project dependencies
+      - name: Install dependencies
+        run: make install-dependencies
+
+      # Step 6: Install the latest GoSec binary to perform static code analysis
+      - name: Install GoSec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      # Step 7: Run GoSec on all code in main branch to get baseline results
+      - name: Run GoSec on main branch
+        run: |
+          gosec -severity=high -confidence=high -no-fail -fmt=json -out=gosec-main.json ./... 
+          jq '.Issues // []' gosec-main.json > gosec-main-issues.json
+
+      # Step 8: Upload baseline (Main) scan results as an artifact for later comparison
+      - name: Upload base scan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosec-main-issues
+          path: gosec-main-issues.json
+
+      # Step 9: Display formatted/structured GoSec findings from main branch for visibility in logs
+      - name: Show Base (main) Findings
+        run: |
+          COUNT=$(jq 'length' gosec-main-issues.json)
+          echo -e "\n🔢 Total GoSec findings in MAIN branch: $COUNT\n"
+          jq -r '.[] | "🔸 Rule: \(.rule_id)\n🔹 Severity: \(.severity)\n📄 File: \(.file)\n📌 Line: \(.line)\n💬 Details: \(.details)\n---"' gosec-main-issues.json || echo "❌ No issues to format."
+
+      # Step 10: Checkout the current PR branch to analyze its code changes
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 11: Capture the commit hash of the PR for traceability
+      - name: Save PR commit hash
+        id: pr_commit
+        run: echo "value=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      # Step 12: Reinstall dependencies for the PR context
+      - name: Reinstall dependencies
+        run: make install-dependencies
+
+      # Step 13: Identify all Go files changed in this PR for targted scanning
+      - name: Identify changed Go files
+        id: changed_files
+        run: |
+          git fetch origin main
+          FILES=$(git diff --name-only origin/main...HEAD | grep '\.go$' || true)
+          FILES=$(echo "$FILES" | xargs)
+          if [ -z "$FILES" ]; then
+            echo "No Go files changed."
+            echo "files=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changed Go files: $FILES"
+            echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          fi
+
+       # Step 14: Handle case where no Go files were changed in the PR
+      - name: Fallback for no Go changes
+        if: steps.changed_files.outputs.files == ''
+        run: |
+          echo "[]" > gosec-pr.json
+          echo "[]" > gosec-pr-issues.json
+          echo "NO_GOSEC_NEEDED=true" >> $GITHUB_ENV
+
+      # Step 15: Run GoSec only on the changed Go files from the PR
+      - name: Run GoSec on PR changes
+        if: steps.changed_files.outputs.files != ''
+        run: |
+          FILES="${{ steps.changed_files.outputs.files }}"
+          mkdir -p tmp_gosec_scan
+          for file in $FILES; do cp --parents "$file" tmp_gosec_scan/; done
+          cd tmp_gosec_scan
+          go mod init temp-module || true
+          go mod tidy || true
+          cd ..
+          gosec -severity=high -confidence=high -no-fail -fmt=json -out=gosec-pr.json ./tmp_gosec_scan/... 
+          jq '.Issues // []' gosec-pr.json > gosec-pr-issues.json
+
+      # Step 16: Upload PR-specific GoSec scan results
+      - name: Upload PR scan results
+        if: always()  # Always upload even if skipped or failed
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosec-pr-issues
+          path: gosec-pr-issues.json
+
+      # Step 17: Display formatted PR findings 
+      - name: Show PR Findings
+        if: steps.changed_files.outputs.files != ''
+        run: |
+          COUNT=$(jq 'length' gosec-pr-issues.json)
+          echo -e "\n🔢 Total GoSec findings in PR branch: $COUNT\n"
+          jq -r '.[] | "🔸 Rule: \(.rule_id)\n🔹 Severity: \(.severity)\n📄 File: \(.file)\n📌 Line: \(.line)\n💬 Details: \(.details)\n---"' gosec-pr-issues.json || echo "❌ No issues to format."
+
+      # Step 18: Download the baseline (main) findings 
+      - name: Download base findings
+        uses: actions/download-artifact@v4
+        with:
+          name: gosec-main-issues
+          path: .
+
+      # Step 19: Download the PR findings 
+      - name: Download PR findings
+        uses: actions/download-artifact@v4
+        with:
+          name: gosec-pr-issues
+          path: .
+
+      # Step 20: Compare baseline and PR findings to detect new issues
+      - name: Perform diff between base and PR findings
+        if: env.NO_GOSEC_NEEDED != 'true'
+        id: diff_findings
+        run: |
+          echo "🔁 Normalizing and comparing issues..."
+          REPO_ROOT="$(pwd)/"
+          echo "Repo root path: $REPO_ROOT"
+
+          jq -c --arg root "$REPO_ROOT" '
+            .[] |
+            {
+              rule_id,
+              file: (.file | sub("^" + $root; "")),
+              line: (try (.line | tonumber) // 0),
+              severity,
+              details
+            } | @json
+          ' gosec-main-issues.json | sort > base-strings.txt
+
+          jq -c --arg root "$REPO_ROOT" '
+            .[] |
+            {
+              rule_id,
+              file: (.file | sub("^" + $root; "" ) | sub("^tmp_gosec_scan/"; "")),
+              line: (try (.line | tonumber) // 0),
+              severity,
+              details
+            } | @json
+          ' gosec-pr-issues.json | sort > pr-strings.txt
+
+          comm -13 base-strings.txt pr-strings.txt > diff-strings.txt
+          jq -s 'map(fromjson)' diff-strings.txt > gosec-diff-issues.json
+
+          COUNT=$(jq 'length' gosec-diff-issues.json)
+          echo "🔍 New GoSec Issues Introduced in PR: $COUNT"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "✅ No new issues introduced."
+          else
+            echo "⚠️ New issues detected:"
+            jq -r '.[] |
+              "🔸 Rule: \(.rule_id)\n🔹 Severity: \(.severity)\n📄 File: \(.file)\n📌 Line: \(.line)\n💬 Details: \(.details)\n---"' gosec-diff-issues.json
+          fi
+
+      # Step 21: Upload only the new issues found in PR (not present in main)
+      - name: Upload GoSec PR diff
+        if: env.NO_GOSEC_NEEDED != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosec-diff-issues
+          path: gosec-diff-issues.json
+
+
+      # Step 22: Post a comment on the PR summarizing the new issues introduced
+      - name: Comment on PR with GoSec Diff
+        if: env.NO_GOSEC_NEEDED != 'true'
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_SHA: ${{ steps.pr_commit.outputs.value }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DIFF=$(jq 'map(.file |= sub("^tmp_gosec_scan/"; ""))' gosec-diff-issues.json)
+          COUNT=$(echo "$DIFF" | jq 'length')
+          COMMENT_FILE="gosec-comment.md"
+          echo "" > "$COMMENT_FILE"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "**✅ GoSec:** No new issues introduced in this PR." > "$COMMENT_FILE"
+          else
+            echo "### 🚨 GoSec found $COUNT new issue(s) introduced in this PR" >> "$COMMENT_FILE"
+            echo "Only top 3 shown below. For full list, check the \`gosec-diff-issues.json\` artifact." >> "$COMMENT_FILE"
+            echo -e "\n---\n" >> "$COMMENT_FILE"
+            MAX=3
+            DISPLAY=$((COUNT < MAX ? COUNT : MAX))
+            for ((i=0; i<DISPLAY; i++)); do
+              issue=$(echo "$DIFF" | jq -c ".[$i]")
+              FILE=$(echo "$issue" | jq -r '.file' | sed 's#^.*tmp_gosec_scan/##')
+              LINE=$(echo "$issue" | jq -r '.line')
+              RULE=$(echo "$issue" | jq -r '.rule_id')
+              SEVERITY=$(echo "$issue" | jq -r '.severity')
+              DETAILS=$(echo "$issue" | jq -r '.details')
+              echo "#### ❗ Rule \`$RULE\`" >> "$COMMENT_FILE"
+              echo "- 🔥 Severity: **$SEVERITY**" >> "$COMMENT_FILE"
+              echo "- 📄 Path: \`$FILE\`" >> "$COMMENT_FILE"
+              echo "- 📌 Line: $LINE" >> "$COMMENT_FILE"
+              echo "- 💬 Details: $DETAILS" >> "$COMMENT_FILE"
+              echo "---" >> "$COMMENT_FILE"
+            done
+          fi
+          cat "$COMMENT_FILE"
+          curl -s -X POST \
+            -H "Authorization: token $secrets.GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "$(jq -n --rawfile body "$COMMENT_FILE" '{body: $body}')" \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments"
+
+      # Step 23: Fallback comment for PRs with no Go file changes
+      - name: Comment on PR (No Go Changes)
+        if: env.NO_GOSEC_NEEDED == 'true'
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "**✅ GoSec:** No \`.go\` files changed in this PR. Static security scan was skipped." > gosec-skip-comment.md
+          curl -s -X POST \
+            -H "Authorization: token $secrets.GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "$(jq -n --rawfile body "gosec-skip-comment.md" '{body: $body}')" \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments"
