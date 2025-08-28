@@ -1,35 +1,40 @@
-# folderA/Makefile
+# Makefile
 
-# Define where Go binaries are installed to avoid polluting the system path.
-# This ensures gosec is installed in a predictable location within the project's context.
+# Define where Go binaries are installed. This keeps our tools project-local.
 GOBIN ?= $(shell go env GOPATH)/bin
 GOSEC := $(GOBIN)/gosec
 
-# Default target for when 'make' is run without arguments.
+# The default command to run if you just type 'make'.
 .DEFAULT_GOAL := help
 
-# Phony targets are rules that don't represent actual files.
-.PHONY: gosec-scan help
+# Tells 'make' that these are command names, not files.
+.PHONY: gosec-scan help clean
 
-# This is the primary target for our CI workflow.
-# It depends on the $(GOSEC) target, which ensures gosec is installed before running.
+# This is the main target for your GitHub Actions workflow.
+# It ensures gosec is installed first by depending on the $(GOSEC) target.
 gosec-scan: $(GOSEC)
 	@echo "--- Running GoSec security scan in $(shell pwd) ---"
-	# Run gosec on all packages within the current directory.
-	# Output is redirected to a file for the workflow to use later.
-	# '|| true' is critical: it makes this step always succeed, even if vulnerabilities are found.
+	# Runs the scan on the current directory and all subdirectories.
+	# The output is saved to a file for the workflow to use.
+	# '|| true' is the key part that prevents the workflow from failing if issues are found.
 	@$(GOSEC) ./... > gosec_results.txt || true
 	@echo "--- GoSec scan complete. Results are in gosec_results.txt ---"
 
-# This target acts as a dependency check. 'make' will only run the command
-# if the file specified by $(GOSEC) does not exist.
+# This target checks if the gosec binary exists and installs it if it doesn't.
+# This makes the setup automatic for both CI and local development.
 $(GOSEC):
 	@echo "--- GoSec not found, installing... ---"
 	@go install github.com/securego/gosec/v2/cmd/gosec@latest
 	@echo "--- GoSec installed successfully. ---"
 
-# A simple help command to explain available targets.
+# A simple target to remove generated files.
+clean:
+	@echo "--- Cleaning up generated files... ---"
+	@rm -f gosec_results.txt
+
+# A help command that explains what the Makefile can do.
 help:
-	@echo "Available targets:"
-	@echo "  gosec-scan  - Run the GoSec security scan and generate a report."
-	@echo "  help        - Show this help message."
+	@echo "Available commands:"
+	@echo "  make gosec-scan  - Installs gosec if needed and runs the security scan."
+	@echo "  make clean       - Removes the generated gosec_results.txt report."
+	@echo "  make help        - Shows this help message."
