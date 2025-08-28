@@ -8,7 +8,14 @@ GOSEC := $(GOBIN)/gosec
 .DEFAULT_GOAL := help
 
 # Tells 'make' that these are command names, not files.
-.PHONY: gosec-scan help clean
+.PHONY: gosec-scan help clean install-dependencies
+
+# This target downloads and tidies the Go module dependencies.
+install-dependencies:
+	@echo "--- Downloading Go module dependencies... ---"
+	@go mod tidy
+	@go mod download
+	@echo "--- Dependencies are up to date. ---"
 
 # This is the main target for your GitHub Actions workflow.
 # It ensures gosec is installed first by depending on the $(GOSEC) target.
@@ -35,6 +42,7 @@ clean:
 # A help command that explains what the Makefile can do.
 help:
 	@echo "Available commands:"
-	@echo "  make gosec-scan  - Installs gosec if needed and runs the security scan."
-	@echo "  make clean       - Removes the generated gosec_results.txt report."
-	@echo "  make help        - Shows this help message."
+	@echo "  make install-dependencies - Downloads and tidies Go module dependencies."
+	@echo "  make gosec-scan       - Installs gosec if needed and runs the security scan."
+	@echo "  make clean            - Removes the generated gosec_results.txt report."
+	@echo "  make help             - Shows this help message."
